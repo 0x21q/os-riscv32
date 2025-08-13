@@ -1,0 +1,11 @@
+/disk/*
+!/disk/.gitkeep
+.zig-cache/
+zig-out/
+*.map
+*.tar
+*.o
+*.elf
+*.bin
+*.log
+*.pcap
