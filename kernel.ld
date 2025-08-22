@@ -5,6 +5,7 @@ ENTRY(boot)
 /* alignment will be 32 bits */
 SECTIONS {
     . = 0x80200000;
+    __kernel_base = .;
 
     .text :{
         KEEP(*(.text.boot));

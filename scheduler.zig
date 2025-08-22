@@ -1,5 +1,6 @@
 const cmn = @import("common.zig");
 const trap = @import("trap.zig");
+const mem = @import("memory.zig");
 
 pub var procs = [_]PCB{.{}} ** 8; // available pcbs
 pub var curr_p: *PCB = undefined; // running process
@@ -12,11 +13,12 @@ const PCB = struct {
         ready,
         running,
     } = .unused,
-    sp: *usize = undefined,
-    k_stack: [16 * 1024]u8 align(4) = undefined,
+    sp: [*]usize = undefined, // stack pointer
+    pt: [*]mem.PTEntry = undefined, // page table
+    k_stack: [16 * 1024]u8 align(4) = undefined, // kernel stack
 };
 
-const Context = struct {
+const Context = packed struct {
     ra: usize = 0,
     s0: usize = 0,
     s1: usize = 0,
@@ -44,16 +46,31 @@ pub fn create_process(entry_point: *const anyopaque) *PCB {
 
     // initialize stack pointer
     const k_stack_top: *u8 = &p.k_stack[p.k_stack.len - 1];
-    const ctf_offset: usize = @intFromPtr(k_stack_top) - @sizeOf(Context);
-    const ctx_ptr: *Context = @ptrFromInt(ctf_offset);
+    const ctx_offset: usize = @intFromPtr(k_stack_top) - @sizeOf(Context);
+    const ctx_ptr: *Context = @ptrFromInt(ctx_offset);
     ctx_ptr.* = .{};
 
     // when switch_context restores 'ra' and does 'ret'
     ctx_ptr.ra = @intFromPtr(entry_point);
 
+    // map kernel pages
+    const pt: [*]mem.PTEntry = @alignCast(@ptrCast(mem.kalloc_page()));
+    var page_paddr = @intFromPtr(mem.kernel_base);
+    const heap_end_u: usize = @intFromPtr(mem.heap_end);
+
+    while (page_paddr < heap_end_u) : (page_paddr += mem.PAGE_SIZE) {
+        mem.map_page(
+            pt,
+            page_paddr,
+            page_paddr,
+            mem.PTFlags{ .R = true, .W = true, .X = true },
+        );
+    }
+
     p.pid = pid;
     p.state = .ready;
     p.sp = @ptrCast(ctx_ptr);
+    p.pt = pt;
     return p;
 }
 
@@ -64,10 +81,16 @@ pub fn yield() void {
         }
     } else idle_p;
 
+    // sfence.vma clears tlb
+    // writing to satp SATP_SV32 enables vmem
     asm volatile (
+        \\sfence.vma
+        \\csrw satp, %[satp]
+        \\sfence.vma
         \\csrw sscratch, %[sscratch]
         :
-        : [sscratch] "r" (&next_p.k_stack[next_p.k_stack.len - 1]),
+        : [satp] "r" (mem.SATP_SV32 | (@intFromPtr(next_p.pt) / mem.PAGE_SIZE)),
+          [sscratch] "r" (next_p.k_stack[0..].ptr[next_p.k_stack.len]),
     );
 
     if (next_p != curr_p) {
@@ -82,23 +105,23 @@ pub fn yield() void {
 pub fn proc_A_entry() void {
     cmn.io.print("starting proc A\n", .{}) catch {};
     while (true) {
-        cmn.io.print("A\n", .{}) catch {};
+        cmn.io.print("A", .{}) catch {};
         yield();
-        for (0..3_000_000_000) |_| asm volatile ("nop");
+        for (0..300_000_000) |_| asm volatile ("nop");
     }
 }
 
 pub fn proc_B_entry() void {
     cmn.io.print("starting proc B\n", .{}) catch {};
     while (true) {
-        cmn.io.print("B\n", .{}) catch {};
+        cmn.io.print("B", .{}) catch {};
         yield();
-        for (0..3_000_000_000) |_| asm volatile ("nop");
+        for (0..300_000_000) |_| asm volatile ("nop");
     }
 }
 
 // needs to be noinline otherwise compiler breaks this
-noinline fn switch_context(prev_sp: **usize, next_sp: **usize) void {
+noinline fn switch_context(prev_sp: *[*]usize, next_sp: *[*]usize) void {
     asm volatile (
         \\
         // save ctx registers of current process
