@@ -15,7 +15,7 @@ const PCB = struct {
     } = .unused,
     sp: [*]usize = undefined, // stack pointer
     pt: [*]mem.PTEntry = undefined, // page table
-    k_stack: [16 * 1024]u8 align(4) = undefined, // kernel stack
+    kernel_stack: [16 * 1024]u8 align(4) = undefined,
 };
 
 const Context = packed struct {
@@ -34,7 +34,7 @@ const Context = packed struct {
     s11: usize = 0,
 };
 
-pub fn create_process(entry_point: *const anyopaque) *PCB {
+pub fn create_process(image: []const u8) *PCB {
     // find unused PCB
     var pid: usize = 0;
     const p = for (&procs, 1..) |*p, i| {
@@ -42,20 +42,20 @@ pub fn create_process(entry_point: *const anyopaque) *PCB {
             pid = i;
             break p;
         }
-    } else trap.k_panic("No PCB available", .{}, @src());
+    } else trap.kernel_panic("No PCB available", .{}, @src());
 
     // initialize stack pointer
-    const k_stack_top: *u8 = &p.k_stack[p.k_stack.len - 1];
-    const ctx_offset: usize = @intFromPtr(k_stack_top) - @sizeOf(Context);
+    const kernel_stack_top: *u8 = &p.kernel_stack[p.kernel_stack.len - 1];
+    const ctx_offset: usize = @intFromPtr(kernel_stack_top) - @sizeOf(Context);
     const ctx_ptr: *Context = @ptrFromInt(ctx_offset);
     ctx_ptr.* = .{};
 
     // when switch_context restores 'ra' and does 'ret'
-    ctx_ptr.ra = @intFromPtr(entry_point);
+    ctx_ptr.ra = @intFromPtr(&user_entry);
 
     // map kernel pages
     const pt: [*]mem.PTEntry = @alignCast(@ptrCast(mem.kalloc_page()));
-    var page_paddr = @intFromPtr(mem.kernel_base);
+    var page_paddr: usize = @intFromPtr(mem.kernel_base);
     const heap_end_u: usize = @intFromPtr(mem.heap_end);
 
     while (page_paddr < heap_end_u) : (page_paddr += mem.PAGE_SIZE) {
@@ -67,9 +67,34 @@ pub fn create_process(entry_point: *const anyopaque) *PCB {
         );
     }
 
+    // map image pages
+    var off: usize = 0;
+    while (off < image.len) : (off += mem.PAGE_SIZE) {
+        const page_paddr_ptr: [*]u8 = @ptrCast(mem.kalloc_page());
+
+        // handle the end of the image
+        const remain = image.len - off;
+        const copy_size =
+            if (mem.PAGE_SIZE <= remain) mem.PAGE_SIZE else remain;
+
+        // copy pages of image from kernel's memory into newly allocated
+        // physical pages which are mapped to virtual pages right after
+        @memcpy(
+            page_paddr_ptr[0..copy_size],
+            image[off..(off + copy_size)],
+        );
+        mem.map_page(
+            pt,
+            mem.USER_BASE_ADR + off,
+            @intFromPtr(page_paddr_ptr),
+            // defined as user page (U flag)
+            .{ .R = true, .W = true, .X = true, .U = true },
+        );
+    }
+
     p.pid = pid;
     p.state = .ready;
-    p.sp = @ptrCast(ctx_ptr);
+    p.sp = @ptrCast(&ctx_ptr.ra);
     p.pt = pt;
     return p;
 }
@@ -81,6 +106,13 @@ pub fn yield() void {
         }
     } else idle_p;
 
+    if (next_p == curr_p) return;
+
+    // (>> 12) == (/ PAGE_SIZE)
+    const next_satp = mem.SATP_SV32 | (@intFromPtr(next_p.pt) >> 12);
+    const next_kernel_sp =
+        next_p.kernel_stack[0..].ptr[next_p.kernel_stack.len];
+
     // sfence.vma clears tlb
     // writing to satp SATP_SV32 enables vmem
     asm volatile (
@@ -89,35 +121,26 @@ pub fn yield() void {
         \\sfence.vma
         \\csrw sscratch, %[sscratch]
         :
-        : [satp] "r" (mem.SATP_SV32 | (@intFromPtr(next_p.pt) / mem.PAGE_SIZE)),
-          [sscratch] "r" (next_p.k_stack[0..].ptr[next_p.k_stack.len]),
+        : [satp] "r" (next_satp),
+          [sscratch] "r" (next_kernel_sp),
     );
 
-    if (next_p != curr_p) {
-        const prev_p = curr_p;
-        prev_p.state = .ready;
-        next_p.state = .running;
-        curr_p = next_p;
-        switch_context(&prev_p.sp, &next_p.sp);
-    }
+    const prev_p = curr_p;
+    prev_p.state = .ready;
+    next_p.state = .running;
+    curr_p = next_p;
+    switch_context(&prev_p.sp, &next_p.sp);
 }
 
-pub fn proc_A_entry() void {
-    cmn.io.print("starting proc A\n", .{}) catch {};
-    while (true) {
-        cmn.io.print("A", .{}) catch {};
-        yield();
-        for (0..300_000_000) |_| asm volatile ("nop");
-    }
-}
-
-pub fn proc_B_entry() void {
-    cmn.io.print("starting proc B\n", .{}) catch {};
-    while (true) {
-        cmn.io.print("B", .{}) catch {};
-        yield();
-        for (0..300_000_000) |_| asm volatile ("nop");
-    }
+fn user_entry() callconv(.naked) void {
+    asm volatile (
+        \\csrw sepc, %[sepc]
+        \\csrw sstatus, %[sstatus]
+        \\sret
+        :
+        : [sepc] "r" (mem.USER_BASE_ADR),
+          [sstatus] "r" (mem.SSTATUS_SPIE),
+    );
 }
 
 // needs to be noinline otherwise compiler breaks this

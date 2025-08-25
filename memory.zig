@@ -1,6 +1,6 @@
 const trap = @import("trap.zig");
 
-// getting addresses of symbols defined in linker script
+// getting addresses of symbols defined in kernel linker script
 pub const bss_start = @extern([*]u8, .{ .name = "__bss" });
 pub const bss_end = @extern([*]u8, .{ .name = "__bss_end" });
 pub const stack_top = @extern([*]u8, .{ .name = "__stack_top" });
@@ -8,8 +8,16 @@ pub const heap_start = @extern([*]u8, .{ .name = "__heap" });
 pub const heap_end = @extern([*]u8, .{ .name = "__heap_end" });
 pub const kernel_base = @extern([*]u8, .{ .name = "__kernel_base" });
 
+// user executable virtual base address
+pub const USER_BASE_ADR = 0x1000_0000;
+// enables vmem with write to satp
 pub const SATP_SV32 = 1 << 31;
+// enables hw ints in U-mode (although not handled yet)
+pub const SSTATUS_SPIE = 1 << 5;
+// common page size
 pub const PAGE_SIZE = 0x1000;
+
+// track of used physical bytes for kalloc
 var used_bytes: usize = 0;
 
 // returns physical address (but vaddr == paddr now)
@@ -18,7 +26,7 @@ pub fn kalloc_page() *anyopaque {
     const heap_end_u: usize = @intFromPtr(heap_end);
 
     if (used_bytes + PAGE_SIZE > heap_end_u - heap_start_u) {
-        trap.k_panic("out of heap memory", .{}, @src());
+        trap.kernel_panic("out of heap memory", .{}, @src());
     }
 
     // get address and update used_bytes
@@ -32,6 +40,8 @@ pub fn kalloc_page() *anyopaque {
     return @ptrFromInt(alloc_paddr);
 }
 
+// vmem structures and helper functions are based on the following
+// article https://simonsungm.cool/2019/10/20/RISC-V-Page-Table-I/
 pub const PTFlags = packed struct(u10) {
     V: bool = false,
     R: bool = false,
@@ -66,10 +76,10 @@ const PAddr = packed struct(u32) {
 
 pub fn map_page(pt1: [*]PTEntry, virt_addr: usize, phys_addr: usize, flags: PTFlags) void {
     if (virt_addr % PAGE_SIZE != 0) {
-        trap.k_panic("vaddr not aligned", .{}, @src());
+        trap.kernel_panic("vaddr not aligned", .{}, @src());
     }
     if (phys_addr % PAGE_SIZE != 0) {
-        trap.k_panic("paddr not aligned", .{}, @src());
+        trap.kernel_panic("paddr not aligned", .{}, @src());
     }
 
     const vaddr: VAddr = @bitCast(virt_addr);
@@ -86,7 +96,7 @@ pub fn map_page(pt1: [*]PTEntry, virt_addr: usize, phys_addr: usize, flags: PTFl
     const pt0: [*]PTEntry = @ptrFromInt(pt0_usize);
 
     if (pt0[vaddr.vpn0].flags.V) {
-        trap.k_panic("page already mapped", .{}, @src());
+        trap.kernel_panic("page already mapped", .{}, @src());
     }
 
     const paddr: PAddr = @bitCast(phys_addr);

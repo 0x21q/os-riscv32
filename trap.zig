@@ -1,7 +1,7 @@
 const std = @import("std");
 const cmn = @import("common.zig");
 
-pub fn k_panic(
+pub fn kernel_panic(
     comptime fmt: []const u8,
     args: anytype,
     loc: std.builtin.SourceLocation,
@@ -26,7 +26,7 @@ pub fn k_panic(
     while (true) asm volatile ("wfi");
 }
 
-pub fn k_trap_entry() align(4) callconv(.naked) void {
+pub fn kernel_trap_entry() align(4) callconv(.naked) void {
     asm volatile (
         \\csrrw sp, sscratch, sp
         \\addi sp, sp, 4 * -31
@@ -145,7 +145,7 @@ export fn handle_trap(tf: *TrapFrame) void {
     const stval = read_csr("stval");
     const user_pc = read_csr("sepc");
 
-    k_panic(
+    kernel_panic(
         "unexpected trap={x}, stval={x}, user_pc=0x{x}",
         .{ scause, stval, user_pc },
         @src(),

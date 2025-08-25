@@ -6,7 +6,7 @@ const mem = @import("memory.zig");
 export fn kernel_main() noreturn {
     // inner main for error handling
     kernel_internal() catch |err| {
-        trap.k_panic("caught error: {s}", .{@errorName(err)}, @src());
+        trap.kernel_panic("caught error: {s}", .{@errorName(err)}, @src());
     };
     while (true) asm volatile ("wfi");
 }
@@ -16,7 +16,7 @@ fn kernel_internal() anyerror!void {
     @memset(bss, 0);
 
     // initialize trap handler function
-    trap.write_csr("stvec", @intFromPtr(&trap.k_trap_entry));
+    trap.write_csr("stvec", @intFromPtr(&trap.kernel_trap_entry));
 
     shdr.idle_p = shdr.create_process(undefined);
     shdr.idle_p.pid = 0;
@@ -24,11 +24,11 @@ fn kernel_internal() anyerror!void {
 
     shdr.curr_p = shdr.idle_p;
 
-    _ = shdr.create_process(&shdr.proc_A_entry);
-    _ = shdr.create_process(&shdr.proc_B_entry);
+    const sh = @embedFile("shell.bin");
+    _ = shdr.create_process(sh);
 
     shdr.yield();
-    trap.k_panic("switched to idle process", .{}, @src());
+    trap.kernel_panic("switched to idle process", .{}, @src());
 }
 
 export fn boot() linksection(".text.boot") callconv(.naked) void {
