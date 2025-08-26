@@ -1,4 +1,3 @@
-const cmn = @import("common.zig");
 const shdr = @import("scheduler.zig");
 const trap = @import("trap.zig");
 const mem = @import("memory.zig");

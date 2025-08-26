@@ -1,22 +1,21 @@
-const mem = @import("memory.zig");
+const cmn = @import("common.zig");
 
 // getting addresses of symbols defined in user linker script
-pub const user_stack_top = @extern([*]u8, .{ .name = "__user_stack_top" });
+const user_stack_top = @extern([*]u8, .{ .name = "__user_stack_top" });
 
-export fn start() linksection(".text.start") callconv(.naked) void {
+export fn start() linksection(".text.start") callconv(.naked) noreturn {
     asm volatile (
         \\mv sp, %[user_stack_top]
-        \\call user_main
-        \\call exit
+        \\call %[shell]
         :
         : [user_stack_top] "r" (user_stack_top),
+          [shell] "X" (&shell),
     );
 }
 
-export fn exit() noreturn {
-    while (true) asm volatile ("nop");
-}
-
-export fn user_main() void {
+fn shell() void {
+    while (true) {
+        cmn.io.print("{c}", .{cmn.getchar()}) catch {};
+    }
     while (true) asm volatile ("nop");
 }

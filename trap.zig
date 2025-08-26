@@ -1,5 +1,6 @@
 const std = @import("std");
 const cmn = @import("common.zig");
+const shdr = @import("scheduler.zig");
 
 pub fn kernel_panic(
     comptime fmt: []const u8,
@@ -8,7 +9,7 @@ pub fn kernel_panic(
 ) noreturn {
     var buf: [1024]u8 = undefined;
     const user_msg = std.fmt.bufPrint(&buf, fmt, args) catch {
-        cmn.io.print(
+        io.print(
             "panic: {s}:{d}:{d}: (message formatting failed)",
             .{ loc.file, loc.line, loc.column },
         ) catch {};
@@ -16,14 +17,14 @@ pub fn kernel_panic(
         while (true) asm volatile ("wfi");
     };
 
-    cmn.io.print("panic: {s}:{d}:{d}: {s}", .{
+    io.print("panic: {s}:{d}:{d}: {s}", .{
         loc.file,
         loc.line,
         loc.column,
         user_msg,
     }) catch {};
 
-    while (true) asm volatile ("wfi");
+    while (true) asm volatile ("nop");
 }
 
 pub fn kernel_trap_entry() align(4) callconv(.naked) void {
@@ -105,6 +106,64 @@ pub fn kernel_trap_entry() align(4) callconv(.naked) void {
     );
 }
 
+const SbiResult = packed struct {
+    err: isize,
+    value: isize,
+};
+
+pub fn sbi_ecall(
+    a0_arg: isize,
+    a1_arg: isize,
+    a2_arg: isize,
+    a3_arg: isize,
+    a4_arg: isize,
+    a5_arg: isize,
+    fid_arg: isize,
+    eid_arg: isize,
+) SbiResult {
+    var err_a0: isize = undefined;
+    var val_a1: isize = undefined;
+
+    asm volatile ("ecall"
+        : [err_a0] "={a0}" (err_a0),
+          [val_a1] "={a1}" (val_a1),
+        : [a0_arg] "{a0}" (a0_arg),
+          [a1_arg] "{a1}" (a1_arg),
+          [a2_arg] "{a2}" (a2_arg),
+          [a3_arg] "{a3}" (a3_arg),
+          [a4_arg] "{a4}" (a4_arg),
+          [a5_arg] "{a5}" (a5_arg),
+          [fid_arg] "{a6}" (fid_arg),
+          [eid_arg] "{a7}" (eid_arg),
+        : "memory"
+    );
+
+    return .{ .err = err_a0, .value = val_a1 };
+}
+
+// defining our own zig writer instead of reimplementing formatting
+pub const io: std.io.AnyWriter = .{
+    .context = undefined,
+    .writeFn = write_fn,
+};
+
+fn kernel_putchar(ch: u8) SbiResult {
+    return sbi_ecall(ch, 0, 0, 0, 0, 0, 0, 1);
+}
+
+fn write_fn(_: *const anyopaque, bytes: []const u8) anyerror!usize {
+    for (bytes) |b| {
+        const res: SbiResult = kernel_putchar(b);
+        if (res.err != 0) return error.SbiError;
+    }
+    return bytes.len;
+}
+
+fn kernel_getchar() isize {
+    const res = sbi_ecall(0, 0, 0, 0, 0, 0, 0, 2);
+    return res.err;
+}
+
 const TrapFrame = extern struct {
     ra: usize,
     gp: usize,
@@ -140,16 +199,43 @@ const TrapFrame = extern struct {
 };
 
 export fn handle_trap(tf: *TrapFrame) void {
-    _ = tf;
     const scause = read_csr("scause");
     const stval = read_csr("stval");
     const user_pc = read_csr("sepc");
 
-    kernel_panic(
-        "unexpected trap={x}, stval={x}, user_pc=0x{x}",
-        .{ scause, stval, user_pc },
-        @src(),
-    );
+    // 0x8 is ecall
+    if (scause == 0x8) {
+        handle_syscall(tf);
+        write_csr("sepc", user_pc + 4);
+    } else {
+        kernel_panic(
+            "unexpected trap scause={x}, stval={x}, sepc={x}",
+            .{ scause, stval, user_pc },
+            @src(),
+        );
+    }
+}
+
+fn handle_syscall(tf: *TrapFrame) void {
+    const sysno: cmn.Syscall_id = @enumFromInt(tf.a3);
+
+    switch (sysno) {
+        .putchar => {
+            const char: u8 = @intCast(tf.a0);
+            io.writeByte(char) catch {};
+        },
+        .getchar => {
+            while (true) {
+                const c = kernel_getchar();
+                if (c >= 0) {
+                    tf.a0 = @intCast(c);
+                    break;
+                }
+
+                shdr.yield();
+            }
+        },
+    }
 }
 
 pub fn read_csr(comptime reg: []const u8) usize {

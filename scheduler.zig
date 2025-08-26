@@ -14,7 +14,7 @@ const PCB = struct {
         running,
     } = .unused,
     sp: [*]usize = undefined, // stack pointer
-    pt: [*]mem.PTEntry = undefined, // page table
+    pt: [*]mem.PTEntry = undefined, // page table pointer
     kernel_stack: [16 * 1024]u8 align(4) = undefined,
 };
 
@@ -100,18 +100,17 @@ pub fn create_process(image: []const u8) *PCB {
 }
 
 pub fn yield() void {
+    // look for another process or continue current
     const next_p = for (&procs) |*p| {
         if (p.state == .ready and p.pid > 0) {
             break p;
         }
-    } else idle_p;
-
-    if (next_p == curr_p) return;
+    } else curr_p;
 
     // (>> 12) == (/ PAGE_SIZE)
     const next_satp = mem.SATP_SV32 | (@intFromPtr(next_p.pt) >> 12);
     const next_kernel_sp =
-        next_p.kernel_stack[0..].ptr[next_p.kernel_stack.len];
+        &next_p.kernel_stack[0..].ptr[next_p.kernel_stack.len];
 
     // sfence.vma clears tlb
     // writing to satp SATP_SV32 enables vmem
