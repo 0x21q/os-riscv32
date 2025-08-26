@@ -47,9 +47,9 @@ pub fn build(b: *std.Build) void {
     elf2raw.addArtifactArg(shell_exe);
     const shell_bin = elf2raw.addOutputFileArg("shell.bin");
 
-    // add raw executable as importable module in kernel
-    // this skips creation of object file from raw exec
-    // and moves this from linker into zig's build
+    // adds raw executable as importable module in kernel
+    // binary, this skips creation of object file from raw
+    // exec and moves this from linker job into zig's build
     kernel_exe.root_module.addAnonymousImport(
         "shell.bin",
         .{ .root_source_file = shell_bin },
