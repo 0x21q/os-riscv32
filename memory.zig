@@ -20,7 +20,7 @@ pub const PAGE_SIZE = 0x1000;
 // track of used physical bytes for kalloc
 var used_bytes: usize = 0;
 
-// returns physical address (but vaddr == paddr now)
+// returns physical address!
 pub fn kalloc_page() *anyopaque {
     const heap_start_u: usize = @intFromPtr(heap_start);
     const heap_end_u: usize = @intFromPtr(heap_end);
@@ -36,6 +36,28 @@ pub fn kalloc_page() *anyopaque {
     // set allocated memory to 0
     const page_ptr: [*]u8 = @ptrFromInt(alloc_paddr);
     @memset(page_ptr[0..PAGE_SIZE], 0);
+
+    return @ptrFromInt(alloc_paddr);
+}
+
+// returns physical address!
+pub fn kalloc_pages(n: usize) *anyopaque {
+    const heap_start_u: usize = @intFromPtr(heap_start);
+    const heap_end_u: usize = @intFromPtr(heap_end);
+
+    const alloc_size = PAGE_SIZE * n;
+
+    if (used_bytes + alloc_size > heap_end_u - heap_start_u) {
+        trap.kernel_panic("out of heap memory", .{}, @src());
+    }
+
+    // get address and update used_bytes
+    const alloc_paddr = heap_start_u + used_bytes;
+    used_bytes += alloc_size;
+
+    // set allocated memory to 0
+    const page_ptr: [*]u8 = @ptrFromInt(alloc_paddr);
+    @memset(page_ptr[0..alloc_size], 0);
 
     return @ptrFromInt(alloc_paddr);
 }
@@ -60,7 +82,7 @@ pub const PTEntry = packed struct(u32) {
     ppn1: u12,
 };
 
-const VAddr = packed struct(u32) {
+pub const VAddr = packed struct(u32) {
     offset: u12,
     vpn0: u10,
     vpn1: u10,
@@ -68,7 +90,7 @@ const VAddr = packed struct(u32) {
 
 // typically paddr is 34-bit in Sv32 spec, however 16 GB range
 // is not necessary for virt device, thus paddr is 32-bit
-const PAddr = packed struct(u32) {
+pub const PAddr = packed struct(u32) {
     offset: u12,
     ppn0: u10,
     ppn1: u10,
@@ -87,7 +109,7 @@ pub fn map_page(pt1: [*]PTEntry, virt_addr: usize, phys_addr: usize, flags: PTFl
     // check if page table entry is not mapped
     // pt1 pte has no flags since it's not physical page
     if (!pt1[vaddr.vpn1].flags.V) {
-        const pt_paddr: PAddr = @bitCast(@intFromPtr((kalloc_page())));
+        const pt_paddr: PAddr = @bitCast(@intFromPtr(kalloc_page()));
         const pte: PTEntry = pte_from_paddr(pt_paddr, .{});
         pt1[vaddr.vpn1] = pte;
     }
@@ -95,9 +117,8 @@ pub fn map_page(pt1: [*]PTEntry, virt_addr: usize, phys_addr: usize, flags: PTFl
     const pt0_usize = usize_from_pte(pt1[vaddr.vpn1]);
     const pt0: [*]PTEntry = @ptrFromInt(pt0_usize);
 
-    if (pt0[vaddr.vpn0].flags.V) {
-        trap.kernel_panic("page already mapped", .{}, @src());
-    }
+    // skip mapped pages
+    if (pt0[vaddr.vpn0].flags.V) return;
 
     const paddr: PAddr = @bitCast(phys_addr);
     pt0[vaddr.vpn0] = pte_from_paddr(paddr, flags);

@@ -1,4 +1,3 @@
-const shdr = @import("scheduler.zig");
 const trap = @import("trap.zig");
 const mem = @import("memory.zig");
 
@@ -17,6 +16,15 @@ fn kernel_internal() anyerror!void {
     // initialize trap handler function
     trap.write_csr("stvec", @intFromPtr(&trap.kernel_trap_entry));
 
+    const blk = @import("blk.zig");
+    var blk_ctx = blk.VirtioBlkCtx{};
+    blk_ctx.virtio_blk_init();
+
+    var buf_store: [mem.PAGE_SIZE]u8 = undefined;
+    blk_ctx.read_write_disk((&buf_store)[0..], 0, false);
+    try trap.io.print("first sector: {s}", .{buf_store});
+
+    const shdr = @import("scheduler.zig");
     shdr.idle_p = shdr.create_process(undefined);
     shdr.idle_p.pid = 0;
     shdr.idle_p.state = .ready;

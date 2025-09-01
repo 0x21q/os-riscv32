@@ -1,6 +1,7 @@
 const cmn = @import("common.zig");
 const trap = @import("trap.zig");
 const mem = @import("memory.zig");
+const blk = @import("blk.zig");
 
 pub var procs = [_]PCB{.{}} ** 8; // available pcbs
 pub var curr_p: *PCB = undefined; // running process
@@ -67,6 +68,14 @@ pub fn create_process(image: []const u8) *PCB {
         );
     }
 
+    // map mmio page
+    mem.map_page(
+        pt,
+        blk.VIRTIO_BLK_PADDR,
+        blk.VIRTIO_BLK_PADDR,
+        mem.PTFlags{ .R = true, .W = true },
+    );
+
     // map image pages
     var off: usize = 0;
     while (off < image.len) : (off += mem.PAGE_SIZE) {
@@ -99,13 +108,21 @@ pub fn create_process(image: []const u8) *PCB {
     return p;
 }
 
+pub fn destroy_process() void {
+    curr_p.pid = 0;
+    curr_p.state = .unused;
+    curr_p.sp = undefined;
+    curr_p.kernel_stack = undefined;
+    curr_p.pt = undefined;
+}
+
 pub fn yield() void {
     // look for another process or continue current
     const next_p = for (&procs) |*p| {
         if (p.state == .ready and p.pid > 0) {
             break p;
         }
-    } else curr_p;
+    } else if (curr_p.state == .unused) idle_p else curr_p;
 
     // (>> 12) == (/ PAGE_SIZE)
     const next_satp = mem.SATP_SV32 | (@intFromPtr(next_p.pt) >> 12);

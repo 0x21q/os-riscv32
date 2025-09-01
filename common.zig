@@ -3,6 +3,7 @@ const std = @import("std");
 pub const Syscall_id = enum(usize) {
     putchar = 1,
     getchar = 2,
+    exit = 3,
 };
 
 pub fn syscall(
@@ -39,4 +40,9 @@ fn write_fn(_: *const anyopaque, bytes: []const u8) anyerror!usize {
         putchar(b);
     }
     return bytes.len;
+}
+
+pub fn exit() noreturn {
+    _ = syscall(.exit, 0, 0, 0);
+    while (true) asm volatile ("nop");
 }

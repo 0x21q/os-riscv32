@@ -205,7 +205,7 @@ export fn handle_trap(tf: *TrapFrame) void {
 
     // 0x8 is ecall
     if (scause == 0x8) {
-        handle_syscall(tf);
+        handle_syscall(tf) catch {};
         write_csr("sepc", user_pc + 4);
     } else {
         kernel_panic(
@@ -216,13 +216,13 @@ export fn handle_trap(tf: *TrapFrame) void {
     }
 }
 
-fn handle_syscall(tf: *TrapFrame) void {
+fn handle_syscall(tf: *TrapFrame) !void {
     const sysno: cmn.Syscall_id = @enumFromInt(tf.a3);
 
     switch (sysno) {
         .putchar => {
             const char: u8 = @intCast(tf.a0);
-            io.writeByte(char) catch {};
+            try io.writeByte(char);
         },
         .getchar => {
             while (true) {
@@ -234,6 +234,12 @@ fn handle_syscall(tf: *TrapFrame) void {
 
                 shdr.yield();
             }
+        },
+        .exit => {
+            try io.print("process {d} exited", .{shdr.curr_p.pid});
+            shdr.destroy_process();
+            shdr.yield();
+            kernel_panic("code unreachable", .{}, @src());
         },
     }
 }

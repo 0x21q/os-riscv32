@@ -66,6 +66,8 @@ pub fn build(b: *std.Build) void {
         "-bios",       "default",
         "-serial",     "mon:stdio",
         "--no-reboot", "-nographic",
+        "-drive",      "id=drive0,file=lorem.txt,format=raw,if=none",
+        "-device",     "virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0",
         "-kernel",
     });
 
