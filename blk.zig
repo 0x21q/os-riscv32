@@ -151,6 +151,11 @@ pub const VirtioBlkCtx = struct {
     blk_req_paddr: usize = 0,
     blk_cap: u64 = 0,
 
+    const RWMode = enum {
+        read,
+        write,
+    };
+
     pub fn virtio_blk_init(ctx: *VirtioBlkCtx) void {
         const reg: VirtioReg = .{};
 
@@ -182,7 +187,10 @@ pub const VirtioBlkCtx = struct {
 
         // get disk capacity
         ctx.blk_cap = reg.read64(.device_config) * SECTOR_SIZE;
-        trap.io.print("virtio-blk: cap is {d} B\n", .{ctx.blk_cap}) catch {};
+        trap.io.print(
+            "virtio-blk: cap is {d} sectors\n",
+            .{ctx.blk_cap / SECTOR_SIZE},
+        ) catch {};
 
         const blk_req_size = @sizeOf(VirtioBlkReq);
         const page_count = (blk_req_size + mem.PAGE_SIZE - 1) / mem.PAGE_SIZE;
@@ -195,7 +203,7 @@ pub const VirtioBlkCtx = struct {
         ctx: *const VirtioBlkCtx,
         buf: []u8,
         sector: u32,
-        is_write: bool,
+        mode: RWMode,
     ) void {
         if (sector >= ctx.blk_cap / SECTOR_SIZE) {
             trap.io.print(
@@ -208,10 +216,10 @@ pub const VirtioBlkCtx = struct {
         // setup request
         ctx.blk_req.sector = sector;
         ctx.blk_req.type =
-            if (is_write) VirtioBlkReq.Type.out else VirtioBlkReq.Type.in;
+            if (mode == .write) VirtioBlkReq.Type.out else VirtioBlkReq.Type.in;
 
         // handle write
-        if (is_write) {
+        if (mode == .write) {
             const dest = ctx.blk_req.data[0..SECTOR_SIZE];
             const src = buf[0..SECTOR_SIZE];
             @memcpy(dest, src);
@@ -232,7 +240,7 @@ pub const VirtioBlkCtx = struct {
         const f_next_int: u16 = @bitCast(VirtqDesc.Flags{ .f_next = true });
         const f_write_int: u16 = @bitCast(VirtqDesc.Flags{ .f_write = true });
         descs[1].flags = @bitCast(
-            f_next_int | (if (is_write) 0 else f_write_int),
+            f_next_int | (if (mode == .write) 0 else f_write_int),
         );
         descs[1].next = 2;
 
@@ -258,7 +266,7 @@ pub const VirtioBlkCtx = struct {
         }
 
         // handle read
-        if (!is_write) {
+        if (mode == .read) {
             const dest = buf[0..SECTOR_SIZE];
             const src = ctx.blk_req.data[0..SECTOR_SIZE];
             @memcpy(dest, src);

@@ -1,5 +1,8 @@
 const trap = @import("trap.zig");
 const mem = @import("memory.zig");
+const blk = @import("blk.zig");
+const shdr = @import("scheduler.zig");
+const fs = @import("fs.zig");
 
 export fn kernel_main() noreturn {
     // inner main for error handling
@@ -15,30 +18,25 @@ fn kernel_internal() anyerror!void {
     const bss = mem._sym_bss_start[0..(bss_end - bss_start)];
     @memset(bss, 0);
 
-    // initialize trap handler function
+    // initialize trap handler
     trap.write_csr("stvec", @intFromPtr(&trap.kernel_trap_entry));
 
-    const fs = @import("fs.zig");
-    const tar_header = fs.TarHeader{};
-    trap.io.write("{s}", tar_header.name);
-    const blk = @import("blk.zig");
-    var blk_ctx = blk.VirtioBlkCtx{};
-    blk_ctx.virtio_blk_init();
+    // initialize block device and file system
+    var ctx = blk.VirtioBlkCtx{};
+    ctx.virtio_blk_init();
+    fs.init(&ctx);
 
-    var buf_store: [mem.PAGE_SIZE]u8 = undefined;
-    blk_ctx.read_write_disk((&buf_store)[0..], 0, false);
-    try trap.io.print("first sector: {s}", .{buf_store});
-
-    const shdr = @import("scheduler.zig");
+    // initialize idle process
     shdr.idle_p = shdr.create_process(undefined);
     shdr.idle_p.pid = 0;
     shdr.idle_p.state = .ready;
-
     shdr.curr_p = shdr.idle_p;
 
+    // create user-space shell process
     const sh = @embedFile("shell.bin");
     _ = shdr.create_process(sh);
 
+    // initialize scheduler
     shdr.yield();
     trap.kernel_panic("switched to idle process", .{}, @src());
 }

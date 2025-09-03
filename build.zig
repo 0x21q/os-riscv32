@@ -55,23 +55,35 @@ pub fn build(b: *std.Build) void {
         .{ .root_source_file = shell_bin },
     );
 
+    // create a tar file from the disk folder contents
+    // and use it as load it to drive0 used by block device
+    const tar_cmd = b.addSystemCommand(&.{ "tar", "cf" });
+    const tar_file = tar_cmd.addOutputFileArg("disk.tar");
+    tar_cmd.addArgs(&.{ "--format=ustar", "-C", "disk", "." });
+
     // configure run command
     const run_cmd = b.addSystemCommand(&.{
         "qemu-system-riscv32",
     });
 
-    run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addArgs(&.{
         "-machine",    "virt",
+        "-m",          "256M",
         "-bios",       "default",
         "-serial",     "mon:stdio",
         "--no-reboot", "-nographic",
-        "-drive",      "id=drive0,file=lorem.txt,format=raw,if=none",
-        "-device",     "virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0",
+        "-drive",
+    });
+    run_cmd.addPrefixedFileArg("id=drive0,format=raw,if=none,file=", tar_file);
+
+    run_cmd.addArgs(&.{
+        "-device", "virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0",
         "-kernel",
     });
-
     run_cmd.addArtifactArg(kernel_exe);
+
+    run_cmd.step.dependOn(&tar_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
 
     const run_step = b.step("run", "run qemu");
     run_step.dependOn(&run_cmd.step);
