@@ -31,10 +31,14 @@ SECTIONS {
     . += 128 * 1024;
     __stack_top = .;
 
-    /* alignment on heap is page size */
-    /* 64 MB heap size */
-    . = ALIGN(4096);
+    . = ALIGN(4);
     __heap = .;
     . += 64 * 1024 * 1024;
     __heap_end = .;
+
+    /* page align since used by page allocator */
+    . = ALIGN(4096);
+    __free_ram = .;
+    . += 128 * 1024 * 1024;
+    __free_ram_end = .;
 }

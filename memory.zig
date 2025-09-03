@@ -1,12 +1,12 @@
 const trap = @import("trap.zig");
 
 // getting addresses of symbols defined in kernel linker script
-pub const bss_start = @extern([*]u8, .{ .name = "__bss" });
-pub const bss_end = @extern([*]u8, .{ .name = "__bss_end" });
-pub const stack_top = @extern([*]u8, .{ .name = "__stack_top" });
-pub const heap_start = @extern([*]u8, .{ .name = "__heap" });
-pub const heap_end = @extern([*]u8, .{ .name = "__heap_end" });
-pub const kernel_base = @extern([*]u8, .{ .name = "__kernel_base" });
+pub const _sym_bss_start = @extern([*]u8, .{ .name = "__bss" });
+pub const _sym_bss_end = @extern([*]u8, .{ .name = "__bss_end" });
+pub const _sym_stack_top = @extern([*]u8, .{ .name = "__stack_top" });
+pub const _sym_free_ram_start = @extern([*]u8, .{ .name = "__free_ram" });
+pub const _sym_free_ram_end = @extern([*]u8, .{ .name = "__free_ram_end" });
+pub const _sym_kernel_base = @extern([*]u8, .{ .name = "__kernel_base" });
 
 // user executable virtual base address
 pub const USER_BASE_ADR = 0x1000_0000;
@@ -17,21 +17,21 @@ pub const SSTATUS_SPIE = 1 << 5;
 // common page size
 pub const PAGE_SIZE = 0x1000;
 
-// track of used physical bytes for kalloc
-var used_bytes: usize = 0;
+// track of used physical ram bytes for kalloc
+var used_phys_bytes: usize = 0;
 
 // returns physical address!
 pub fn kalloc_page() *anyopaque {
-    const heap_start_u: usize = @intFromPtr(heap_start);
-    const heap_end_u: usize = @intFromPtr(heap_end);
+    const free_ram_start: usize = @intFromPtr(_sym_free_ram_start);
+    const free_ram_end: usize = @intFromPtr(_sym_free_ram_end);
 
-    if (used_bytes + PAGE_SIZE > heap_end_u - heap_start_u) {
+    if (used_phys_bytes + PAGE_SIZE > free_ram_start - free_ram_end) {
         trap.kernel_panic("out of heap memory", .{}, @src());
     }
 
-    // get address and update used_bytes
-    const alloc_paddr = heap_start_u + used_bytes;
-    used_bytes += PAGE_SIZE;
+    // get address and update used_phys_bytes
+    const alloc_paddr = free_ram_start + used_phys_bytes;
+    used_phys_bytes += PAGE_SIZE;
 
     // set allocated memory to 0
     const page_ptr: [*]u8 = @ptrFromInt(alloc_paddr);
@@ -41,19 +41,19 @@ pub fn kalloc_page() *anyopaque {
 }
 
 // returns physical address!
-pub fn kalloc_pages(n: usize) *anyopaque {
-    const heap_start_u: usize = @intFromPtr(heap_start);
-    const heap_end_u: usize = @intFromPtr(heap_end);
+pub fn kalloc_pages(count: usize) *anyopaque {
+    const free_ram_start: usize = @intFromPtr(_sym_free_ram_start);
+    const free_ram_end: usize = @intFromPtr(_sym_free_ram_end);
 
-    const alloc_size = PAGE_SIZE * n;
+    const alloc_size = PAGE_SIZE * count;
 
-    if (used_bytes + alloc_size > heap_end_u - heap_start_u) {
+    if (used_phys_bytes + alloc_size > free_ram_end - free_ram_start) {
         trap.kernel_panic("out of heap memory", .{}, @src());
     }
 
-    // get address and update used_bytes
-    const alloc_paddr = heap_start_u + used_bytes;
-    used_bytes += alloc_size;
+    // get address and update used_phys_bytes
+    const alloc_paddr = free_ram_start + used_phys_bytes;
+    used_phys_bytes += alloc_size;
 
     // set allocated memory to 0
     const page_ptr: [*]u8 = @ptrFromInt(alloc_paddr);

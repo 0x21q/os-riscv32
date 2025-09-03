@@ -10,12 +10,17 @@ export fn kernel_main() noreturn {
 }
 
 fn kernel_internal() anyerror!void {
-    const bss = mem.bss_start[0..(mem.bss_end - mem.bss_start)];
+    const bss_start: usize = @intFromPtr(mem._sym_bss_start);
+    const bss_end: usize = @intFromPtr(mem._sym_bss_end);
+    const bss = mem._sym_bss_start[0..(bss_end - bss_start)];
     @memset(bss, 0);
 
     // initialize trap handler function
     trap.write_csr("stvec", @intFromPtr(&trap.kernel_trap_entry));
 
+    const fs = @import("fs.zig");
+    const tar_header = fs.TarHeader{};
+    trap.io.write("{s}", tar_header.name);
     const blk = @import("blk.zig");
     var blk_ctx = blk.VirtioBlkCtx{};
     blk_ctx.virtio_blk_init();
@@ -43,6 +48,6 @@ export fn boot() linksection(".text.boot") callconv(.naked) void {
         \\mv sp, %[stack_top]
         \\j kernel_main
         :
-        : [stack_top] "r" (mem.stack_top),
+        : [stack_top] "r" (mem._sym_stack_top),
     );
 }

@@ -56,10 +56,10 @@ pub fn create_process(image: []const u8) *PCB {
 
     // map kernel pages
     const pt: [*]mem.PTEntry = @alignCast(@ptrCast(mem.kalloc_page()));
-    var page_paddr: usize = @intFromPtr(mem.kernel_base);
-    const heap_end_u: usize = @intFromPtr(mem.heap_end);
+    var page_paddr: usize = @intFromPtr(mem._sym_kernel_base);
+    const free_ram_end: usize = @intFromPtr(mem._sym_free_ram_end);
 
-    while (page_paddr < heap_end_u) : (page_paddr += mem.PAGE_SIZE) {
+    while (page_paddr < free_ram_end) : (page_paddr += mem.PAGE_SIZE) {
         mem.map_page(
             pt,
             page_paddr,
