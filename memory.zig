@@ -14,6 +14,8 @@ pub const USER_BASE_ADR = 0x1000_0000;
 pub const SATP_SV32 = 1 << 31;
 // enables hw ints in U-mode (although not handled yet)
 pub const SSTATUS_SPIE = 1 << 5;
+// enables s-mode (kernel) to access user pages
+pub const SSTATUS_SUM = 1 << 18;
 // common page size
 pub const PAGE_SIZE = 0x1000;
 

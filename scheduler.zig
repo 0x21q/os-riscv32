@@ -1,4 +1,4 @@
-const cmn = @import("common.zig");
+const user = @import("user.zig");
 const trap = @import("trap.zig");
 const mem = @import("memory.zig");
 const blk = @import("blk.zig");
@@ -155,7 +155,7 @@ fn user_entry() callconv(.naked) void {
         \\sret
         :
         : [sepc] "r" (mem.USER_BASE_ADR),
-          [sstatus] "r" (mem.SSTATUS_SPIE),
+          [sstatus] "r" (mem.SSTATUS_SPIE | mem.SSTATUS_SUM),
     );
 }
 
