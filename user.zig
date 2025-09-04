@@ -4,6 +4,8 @@ pub const Syscall_id = enum(usize) {
     putchar = 1,
     getchar = 2,
     exit = 3,
+    readfile = 4,
+    writefile = 5,
 };
 
 pub fn syscall(
@@ -45,4 +47,16 @@ fn write_fn(_: *const anyopaque, bytes: []const u8) anyerror!usize {
 pub fn exit() noreturn {
     _ = syscall(.exit, 0, 0, 0);
     while (true) asm volatile ("nop");
+}
+
+pub fn readfile(filename: []const u8, buffer: []u8) usize {
+    const name_addr: usize = @intFromPtr(filename.ptr);
+    const buf_addr: usize = @intFromPtr(buffer.ptr);
+    return syscall(.readfile, name_addr, buf_addr, buffer.len);
+}
+
+pub fn writefile(filename: []const u8, buffer: []const u8) usize {
+    const name_addr: usize = @intFromPtr(filename.ptr);
+    const buf_addr: usize = @intFromPtr(buffer.ptr);
+    return syscall(.writefile, name_addr, buf_addr, buffer.len);
 }

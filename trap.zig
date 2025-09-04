@@ -1,5 +1,5 @@
 const std = @import("std");
-const cmn = @import("common.zig");
+const user = @import("user.zig");
 const shdr = @import("scheduler.zig");
 
 pub fn kernel_panic(
@@ -217,7 +217,7 @@ export fn handle_trap(tf: *TrapFrame) void {
 }
 
 fn handle_syscall(tf: *TrapFrame) !void {
-    const sysno: cmn.Syscall_id = @enumFromInt(tf.a3);
+    const sysno: user.Syscall_id = @enumFromInt(tf.a3);
 
     switch (sysno) {
         .putchar => {
@@ -241,8 +241,34 @@ fn handle_syscall(tf: *TrapFrame) !void {
             shdr.yield();
             kernel_panic("code unreachable", .{}, @src());
         },
+        .readfile, .writefile => {
+            const filename: [*]u8 = @ptrFromInt(tf.a0);
+            const buffer: [*]u8 = @ptrFromInt(tf.a1);
+            var len = tf.a2;
+
+            var file = fs.file_lookup(filename) catch {
+                io.print("file could not be found\n", .{}) catch {};
+                return;
+            };
+
+            // sizeof file.data
+            if (len > @sizeOf([1024]u8))
+                len = @intCast(file.size);
+
+            if (sysno == .writefile) {
+                @memcpy(file.data[0..len], buffer);
+                file.size = @intCast(len);
+                fs.flush();
+            } else {
+                @memcpy(buffer, file.data[0..len]);
+            }
+
+            tf.a0 = len;
+        },
     }
 }
+
+const fs = @import("fs.zig");
 
 pub fn read_csr(comptime reg: []const u8) usize {
     return asm volatile ("csrr %[ret], " ++ reg
