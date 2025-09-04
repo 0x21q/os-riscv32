@@ -10,7 +10,7 @@ const TarHeader = extern struct {
     mode: [8]u8 align(1),
     uid: [8]u8 align(1),
     gid: [8]u8 align(1),
-    size: [12]u8 align(1),
+    size_oct: [12]u8 align(1),
     mtime: [12]u8 align(1),
     checksum: [8]u8 align(1),
     type: u8 align(1),
@@ -32,25 +32,27 @@ const File = struct {
     size: usize = 0,
 };
 
-var files = [_]File{.{}} ** FILES_MAX;
-var mem_disk_buf = [_]u8{0} ** DISK_SIZE_MAX;
+pub var files = [_]File{.{}} ** FILES_MAX;
+var disk_cache = [_]u8{0} ** DISK_SIZE_MAX;
 
-pub fn init(blk_ctx: *blk.VirtioBlkCtx) void {
+pub fn init() void {
     // load disk data into the buffer
-    for (0..mem_disk_buf.len / blk.SECTOR_SIZE) |sector_id| {
+    for (0..disk_cache.len / blk.SECTOR_SIZE) |sector_id| {
         const sector_offset = sector_id * blk.SECTOR_SIZE;
-        blk_ctx.read_write_disk(
-            mem_disk_buf[sector_offset..][0..blk.SECTOR_SIZE],
+        blk.read_write_sector(
+            disk_cache[sector_offset..][0..blk.SECTOR_SIZE],
             sector_id,
             .read,
         );
     }
 
     var offset: usize = 0;
-    for (&files) |*file| {
-        const hdr: *const TarHeader = @ptrCast(mem_disk_buf[offset..].ptr);
 
-        if (hdr.name[0] == 0x0) break;
+    for (&files) |*file| {
+        const hdr: *const TarHeader = @ptrCast(disk_cache[offset..].ptr);
+
+        if (hdr.name[0] == 0x0)
+            break;
 
         // check magic value
         const ustar = [_]u8{ 'u', 's', 't', 'a', 'r', 0 };
@@ -63,14 +65,16 @@ pub fn init(blk_ctx: *blk.VirtioBlkCtx) void {
         }
 
         // fill file struct
-        const size = oct2dec(&hdr.size);
+        const size = octstr2dec(&hdr.size_oct);
         file.* = .{
             .used = true,
             .name = hdr.name,
             .size = size,
         };
-        const tar_data = mem_disk_buf[mem_disk_buf.len..][0..size];
-        @memcpy(&file.data, tar_data);
+        const data_start = offset + @sizeOf(TarHeader);
+        const tar_data = disk_cache[data_start .. data_start + size];
+        const bytes_to_copy = @min(size, file.data.len);
+        @memcpy(file.data[0..bytes_to_copy], tar_data);
 
         trap.io.print(
             "file: {s} size={d}\n",
@@ -81,13 +85,82 @@ pub fn init(blk_ctx: *blk.VirtioBlkCtx) void {
     }
 }
 
-fn oct2dec(oct_chars: *const [12]u8) usize {
+pub fn flush() void {
+    var offset: usize = 0;
+
+    for (&files) |file| {
+        if (!file.used)
+            continue;
+
+        var hdr: *TarHeader = @ptrCast(disk_cache[offset..].ptr);
+        hdr.* = std.mem.zeroInit(TarHeader, .{
+            .name = file.name,
+            .mode = [8]u8{ '0', '0', '0', '6', '4', '4', 0, 0 },
+            .size_oct = dec2octstr(file.size).*,
+            .magic = [6]u8{ 'u', 's', 't', 'a', 'r', 0 },
+            .version = [2]u8{ '0', '0' },
+            .type = '0',
+            .checksum = [8]u8{ ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ' },
+        });
+
+        // checksum
+        var sum: usize = 0;
+        const hdr_bytes = std.mem.toBytes(hdr);
+        for (hdr_bytes) |byte| sum += byte;
+        var stream = std.io.fixedBufferStream(hdr.checksum[0..6]);
+        std.fmt.formatInt(sum, 8, .upper, .{}, stream.writer()) catch {};
+        hdr.checksum[6] = 0;
+        hdr.checksum[7] = ' ';
+
+        const data_start = offset + @sizeOf(TarHeader);
+        const tar_data = disk_cache[data_start .. data_start + file.size];
+        @memcpy(tar_data, file.data[0..file.size]);
+        offset += align_up(@sizeOf(TarHeader) + file.size, blk.SECTOR_SIZE);
+    }
+
+    // load disk data into the buffer
+    for (0..disk_cache.len / blk.SECTOR_SIZE) |sector_id| {
+        const sector_offset = sector_id * blk.SECTOR_SIZE;
+        blk.read_write_sector(
+            disk_cache[sector_offset..][0..blk.SECTOR_SIZE],
+            sector_id,
+            .write,
+        );
+    }
+
+    trap.io.print("wrote {d} bytes to disk\n", .{disk_cache.len}) catch {};
+}
+
+pub fn file_lookup(lookup: [*]u8) !*File {
+    for (&files) |*file| {
+        var i: usize = 0;
+        while (lookup[i] != 0x0) : (i += 1) {}
+        if (std.mem.eql(u8, file.name[0..i], lookup[0..i])) {
+            return file;
+        }
+    }
+    return error.FileNotFound;
+}
+
+fn octstr2dec(oct_chars: *const [12]u8) usize {
     var dec: usize = 0;
     for (oct_chars) |char| {
         if (char < '0' or char > '7') break;
         dec = dec * 8 + (char - '0');
     }
     return dec;
+}
+
+fn dec2octstr(dec: usize) *[12]u8 {
+    var octstr: [12]u8 = [_]u8{0} ** 12;
+    var i: usize = @sizeOf([12]u8);
+    var digit = dec;
+
+    while (i > 0) : (i -= 1) {
+        octstr[i - 1] = @intCast((digit % 8) + '0');
+        digit /= 8;
+    }
+    return @ptrCast(&octstr);
 }
 
 fn align_up(value: usize, alignment: usize) usize {
