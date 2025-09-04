@@ -6,6 +6,11 @@ pub const SECTOR_SIZE: u32 = 512;
 pub const VIRTQ_ENTRY_NUM: u32 = 16;
 pub const VIRTIO_BLK_PADDR: u32 = 0x1000_1000;
 
+pub var blk_req_vq: *Virtq = undefined;
+pub var blk_req: *VirtioBlkReq = undefined;
+pub var blk_req_paddr: usize = 0;
+pub var blk_cap: u64 = 0;
+
 // virtio register
 pub const VirtioReg = struct {
     const Offset = enum(u32) {
@@ -145,134 +150,122 @@ pub const VirtioBlkReq = extern struct {
     };
 };
 
-pub const VirtioBlkCtx = struct {
-    blk_req_vq: *Virtq = undefined,
-    blk_req: *VirtioBlkReq = undefined,
-    blk_req_paddr: usize = 0,
-    blk_cap: u64 = 0,
+pub fn virtio_blk_init() void {
+    const reg: VirtioReg = .{};
 
-    const RWMode = enum {
-        read,
-        write,
-    };
-
-    pub fn virtio_blk_init(ctx: *VirtioBlkCtx) void {
-        const reg: VirtioReg = .{};
-
-        if (reg.read32(.magic) != 0x74726976) {
-            trap.kernel_panic("virtio: invalid magic value", .{}, @src());
-        }
-        if (reg.read32(.version) != 0x1) {
-            trap.kernel_panic("virtio: invalid version", .{}, @src());
-        }
-        if (reg.read32(.device_id) != 0x2) {
-            trap.kernel_panic("virtio: invalid device id", .{}, @src());
-        }
-
-        // virtio device initialization
-        reg.write32(.device_status, 0);
-        reg.fetch_or32(.device_status, VirtioDevStatus{ .ack = true });
-        reg.fetch_or32(.device_status, VirtioDevStatus{ .driver = true });
-        reg.fetch_or32(.device_status, VirtioDevStatus{ .feat_ok = true });
-
-        // tells the device the page size to calculate the queue address
-        // (PFN * page_size). if unused, the device assumes page_size=1,
-        // so PFN value must be the full address
-        reg.write32(.guest_page_size, @as(u32, mem.PAGE_SIZE));
-
-        ctx.blk_req_vq = virtq_init(0);
-
-        const dev_stat: u7 = @bitCast(VirtioDevStatus{ .driver_ok = true });
-        reg.write32(.device_status, @as(u32, dev_stat));
-
-        // get disk capacity
-        ctx.blk_cap = reg.read64(.device_config) * SECTOR_SIZE;
-        trap.io.print(
-            "virtio-blk: cap is {d} sectors\n",
-            .{ctx.blk_cap / SECTOR_SIZE},
-        ) catch {};
-
-        const blk_req_size = @sizeOf(VirtioBlkReq);
-        const page_count = (blk_req_size + mem.PAGE_SIZE - 1) / mem.PAGE_SIZE;
-
-        ctx.blk_req_paddr = (@intFromPtr(mem.kalloc_pages(page_count)));
-        ctx.blk_req = @ptrFromInt(ctx.blk_req_paddr);
+    if (reg.read32(.magic) != 0x74726976) {
+        trap.kernel_panic("virtio: invalid magic value", .{}, @src());
+    }
+    if (reg.read32(.version) != 0x1) {
+        trap.kernel_panic("virtio: invalid version", .{}, @src());
+    }
+    if (reg.read32(.device_id) != 0x2) {
+        trap.kernel_panic("virtio: invalid device id", .{}, @src());
     }
 
-    pub fn read_write_disk(
-        ctx: *const VirtioBlkCtx,
-        buf: []u8,
-        sector: u32,
-        mode: RWMode,
-    ) void {
-        if (sector >= ctx.blk_cap / SECTOR_SIZE) {
-            trap.io.print(
-                "virtio: tried read/write sector={d} to capacity {d}",
-                .{ sector, ctx.blk_cap / SECTOR_SIZE },
-            ) catch {};
-            return;
-        }
+    // virtio device initialization
+    reg.write32(.device_status, 0);
+    reg.fetch_or32(.device_status, VirtioDevStatus{ .ack = true });
+    reg.fetch_or32(.device_status, VirtioDevStatus{ .driver = true });
+    reg.fetch_or32(.device_status, VirtioDevStatus{ .feat_ok = true });
 
-        // setup request
-        ctx.blk_req.sector = sector;
-        ctx.blk_req.type =
-            if (mode == .write) VirtioBlkReq.Type.out else VirtioBlkReq.Type.in;
+    // tells the device the page size to calculate the queue address
+    // (PFN * page_size). if unused, the device assumes page_size=1,
+    // so PFN value must be the full address
+    reg.write32(.guest_page_size, @as(u32, mem.PAGE_SIZE));
 
-        // handle write
-        if (mode == .write) {
-            const dest = ctx.blk_req.data[0..SECTOR_SIZE];
-            const src = buf[0..SECTOR_SIZE];
-            @memcpy(dest, src);
-        }
+    blk_req_vq = virtq_init(0);
 
-        // setup all descriptors
-        const vq: *Virtq = ctx.blk_req_vq;
-        const descs = &vq.base.descs;
+    const dev_stat: u7 = @bitCast(VirtioDevStatus{ .driver_ok = true });
+    reg.write32(.device_status, @as(u32, dev_stat));
 
-        descs[0].addr = @as(u64, ctx.blk_req_paddr);
-        descs[0].len = @sizeOf(u32) * 2 + @sizeOf(u64);
-        descs[0].flags = VirtqDesc.Flags{ .f_next = true };
-        descs[0].next = 1;
+    // get disk capacity
+    blk_cap = reg.read64(.device_config) * SECTOR_SIZE;
+    trap.io.print(
+        "virtio-blk: cap is {d} sectors\n",
+        .{blk_cap / SECTOR_SIZE},
+    ) catch {};
 
-        const data_off = @offsetOf(VirtioBlkReq, "data");
-        descs[1].addr = @as(u64, ctx.blk_req_paddr + data_off);
-        descs[1].len = SECTOR_SIZE;
-        const f_next_int: u16 = @bitCast(VirtqDesc.Flags{ .f_next = true });
-        const f_write_int: u16 = @bitCast(VirtqDesc.Flags{ .f_write = true });
-        descs[1].flags = @bitCast(
-            f_next_int | (if (mode == .write) 0 else f_write_int),
-        );
-        descs[1].next = 2;
+    const blk_req_size = @sizeOf(VirtioBlkReq);
+    const page_count = (blk_req_size + mem.PAGE_SIZE - 1) / mem.PAGE_SIZE;
 
-        const status_off = @offsetOf(VirtioBlkReq, "status");
-        descs[2].addr = @as(u64, ctx.blk_req_paddr + status_off);
-        descs[2].len = @sizeOf(u8);
-        descs[2].flags = VirtqDesc.Flags{ .f_write = true };
+    blk_req_paddr = (@intFromPtr(mem.kalloc_pages(page_count)));
+    blk_req = @ptrFromInt(blk_req_paddr);
+}
 
-        // notify device for new requets
-        virtq_kick(vq, 0);
-
-        // busy wait until finished
-        while (vq.last_used_index != vq.used_index.*) {
-            asm volatile ("nop");
-        }
-
-        if (ctx.blk_req.status != 0) {
-            trap.io.print(
-                "virtio: failed read/write sector={d} status={d}",
-                .{ sector, ctx.blk_req.status },
-            ) catch {};
-            return;
-        }
-
-        // handle read
-        if (mode == .read) {
-            const dest = buf[0..SECTOR_SIZE];
-            const src = ctx.blk_req.data[0..SECTOR_SIZE];
-            @memcpy(dest, src);
-        }
-    }
+const RWMode = enum {
+    read,
+    write,
 };
+
+pub fn read_write_sector(buf: []u8, sector: u32, mode: RWMode) void {
+    if (sector >= blk_cap / SECTOR_SIZE) {
+        trap.io.print(
+            "virtio: tried read/write sector={d} to capacity {d}",
+            .{ sector, blk_cap / SECTOR_SIZE },
+        ) catch {};
+        return;
+    }
+
+    // setup request
+    blk_req.sector = sector;
+    blk_req.type =
+        if (mode == .write) VirtioBlkReq.Type.out else VirtioBlkReq.Type.in;
+
+    // handle write
+    if (mode == .write) {
+        const dest = blk_req.data[0..SECTOR_SIZE];
+        const src = buf[0..SECTOR_SIZE];
+        @memcpy(dest, src);
+    }
+
+    // setup all descriptors
+    const vq: *Virtq = blk_req_vq;
+    const descs = &vq.base.descs;
+
+    descs[0].addr = @as(u64, blk_req_paddr);
+    descs[0].len = @sizeOf(u32) * 2 + @sizeOf(u64);
+    descs[0].flags = VirtqDesc.Flags{ .f_next = true };
+    descs[0].next = 1;
+
+    const data_off = @offsetOf(VirtioBlkReq, "data");
+    descs[1].addr = @as(u64, blk_req_paddr + data_off);
+    descs[1].len = SECTOR_SIZE;
+    const f_next_int: u16 = @bitCast(VirtqDesc.Flags{ .f_next = true });
+    const f_write_int: u16 = @bitCast(VirtqDesc.Flags{ .f_write = true });
+    descs[1].flags = @bitCast(
+        f_next_int | (if (mode == .write) 0 else f_write_int),
+    );
+    descs[1].next = 2;
+
+    const status_off = @offsetOf(VirtioBlkReq, "status");
+    descs[2].addr = @as(u64, blk_req_paddr + status_off);
+    descs[2].len = @sizeOf(u8);
+    descs[2].flags = VirtqDesc.Flags{ .f_write = true };
+
+    // notify device for new requets
+    virtq_kick(vq, 0);
+
+    // busy wait until finished
+    while (vq.last_used_index != vq.used_index.*) {
+        asm volatile ("nop");
+    }
+
+    if (blk_req.status != 0) {
+        trap.io.print(
+            "virtio: failed read/write sector={d} status={d}",
+            .{ sector, blk_req.status },
+        ) catch {};
+        return;
+    }
+
+    // handle read
+    if (mode == .read) {
+        const dest = buf[0..SECTOR_SIZE];
+        const src = blk_req.data[0..SECTOR_SIZE];
+        @memcpy(dest, src);
+    }
+}
 
 fn virtq_init(index: u32) *Virtq {
     const layout_size = @sizeOf(VirtioVirtqLayout);

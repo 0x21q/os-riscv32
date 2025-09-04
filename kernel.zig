@@ -22,9 +22,8 @@ fn kernel_internal() anyerror!void {
     trap.write_csr("stvec", @intFromPtr(&trap.kernel_trap_entry));
 
     // initialize block device and file system
-    var ctx = blk.VirtioBlkCtx{};
-    ctx.virtio_blk_init();
-    fs.init(&ctx);
+    blk.virtio_blk_init();
+    fs.init();
 
     // initialize idle process
     shdr.idle_p = shdr.create_process(undefined);
